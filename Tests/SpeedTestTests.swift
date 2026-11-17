@@ -22,7 +22,9 @@ enum SpeedTestTests {
             let test = SpeedTest(configuration: configuration, sampleSeconds: 0.1,
                                  clock: clock.now, scheduleTimeBox: scheduler.schedule)
             test.start()
-            let deadline = Date().addingTimeInterval(3)
+            // The loop ends as soon as the test does; the deadline only bounds a
+            // hang. Slower Macs (Intel virtual machines in CI) need more than 3 s.
+            let deadline = Date().addingTimeInterval(15)
             var completed = false
             var firedDownloadTimeBox = false
             repeat {
