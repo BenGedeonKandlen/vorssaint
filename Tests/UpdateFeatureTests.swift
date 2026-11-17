@@ -1174,6 +1174,23 @@ enum UpdateFeatureTests {
         suite.expect(!UpdateServiceSupport.sha256Matches(Data("abc".utf8), expectedHex: "invalid"),
                "update media rejects a malformed pinned digest")
 
+        let plainRelease = ["Vorssaint-3.4.5.dmg", "SHA256SUMS"]
+        suite.expect(UpdateServiceSupport.dmgAssetName(from: plainRelease, architecture: "arm64")
+                        == "Vorssaint-3.4.5.dmg",
+               "an Apple Silicon build keeps installing the release's single DMG")
+        suite.expect(UpdateServiceSupport.dmgAssetName(from: plainRelease, architecture: "x86_64") == nil,
+               "an Intel build never installs an Apple Silicon-only DMG over itself")
+        let splitRelease = ["Vorssaint-3.4.5-arm64.dmg", "Vorssaint-3.4.5-x86_64.dmg"]
+        suite.expect(UpdateServiceSupport.dmgAssetName(from: splitRelease, architecture: "x86_64")
+                        == "Vorssaint-3.4.5-x86_64.dmg"
+                    && UpdateServiceSupport.dmgAssetName(from: splitRelease.reversed(), architecture: "arm64")
+                        == "Vorssaint-3.4.5-arm64.dmg",
+               "each architecture picks its own DMG from a split release")
+        suite.expect(UpdateServiceSupport.dmgAssetName(from: ["Vorssaint-3.4.5-universal.dmg"],
+                                                       architecture: "x86_64")
+                        == "Vorssaint-3.4.5-universal.dmg",
+               "an Intel build accepts a universal DMG")
+
         // Defaults registered
         suite.expect(Defaults.registeredDefaults[DefaultsKey.includeBetaUpdates] as? Bool == false,
                "includeBetaUpdates defaults to false in registeredDefaults")

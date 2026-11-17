@@ -16,6 +16,39 @@ enum UpdateServiceSupport {
         return actual == expectedHex.lowercased()
     }
 
+    // MARK: - Architecture
+
+    /// The CPU architecture this copy of the app was compiled for.
+    static var runningArchitecture: String {
+        #if arch(arm64)
+        return "arm64"
+        #else
+        return "x86_64"
+        #endif
+    }
+
+    /// Picks the release DMG this Mac can run. Releases that only ship one
+    /// unnamed DMG are Apple Silicon builds, so an Intel build accepts only an
+    /// asset whose name says it is for Intel or universal; installing an arm64
+    /// DMG over it would leave an app that no longer launches.
+    static func dmgAssetName(from names: [String], architecture: String) -> String? {
+        let dmgs = names.filter { $0.lowercased().hasSuffix(".dmg") }
+        func mentions(_ name: String, _ words: [String]) -> Bool {
+            let lower = name.lowercased()
+            return words.contains { lower.contains($0) }
+        }
+        let intelWords = ["x86_64", "x86-64", "intel", "x64"]
+        let universalWords = ["universal"]
+        let appleWords = ["arm64", "apple-silicon", "applesilicon"]
+        if architecture == "x86_64" {
+            return dmgs.first { mentions($0, intelWords) }
+                ?? dmgs.first { mentions($0, universalWords) }
+        }
+        return dmgs.first { mentions($0, appleWords) }
+            ?? dmgs.first { mentions($0, universalWords) }
+            ?? dmgs.first { !mentions($0, intelWords) }
+    }
+
     // MARK: - Pre-release Identifier
 
     enum PrereleaseIdentifier: Comparable, Equatable, CustomStringConvertible {

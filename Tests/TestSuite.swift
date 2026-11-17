@@ -35,6 +35,9 @@ final class TestSuite {
         let elapsed = ProcessInfo.processInfo.systemUptime - started
         let status = failures.count == previousFailures ? "OK" : "FAILED"
         print("\(name): \(status) (\(checks - before) checks, \(String(format: "%.2f", elapsed))s)")
+        // stdout is block-buffered in CI, and a crash (abort) drops the buffer;
+        // flushing per suite keeps the last finished suite visible in the log.
+        fflush(stdout)
     }
 
     func finish() -> Never {

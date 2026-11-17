@@ -226,7 +226,7 @@ See the [permissions guide](docs/PERMISSIONS.md) for which features need access 
 
 ## What you need
 
-- A Mac with Apple Silicon
+- A Mac with Apple Silicon, or an Intel Mac when you build it yourself (see below)
 - macOS 14 Sonoma or newer
 
 ### Build it yourself
@@ -237,6 +237,8 @@ cd vorssaint-utils
 ./build.sh --dev            # build the separate Developer variant
 ./build.sh --dev --install  # install and launch it
 ```
+
+`build.sh` builds for the Mac it runs on, so the same commands produce a native Intel build on an Intel Mac. Pick an architecture explicitly with `--arch=arm64`, `--arch=x86_64` or `--universal` (one app for both). On an Intel build the in-app updater only offers releases that ship an Intel or universal DMG, so it never replaces your build with one that cannot run; update by pulling and rebuilding. Some hardware features (Fan Control, sensor names, core groups) were developed on Apple Silicon and may show less or nothing on Intel Macs.
 
 Xcode Command Line Tools are the only requirement. The [contributing guide](CONTRIBUTING.md) covers the layout and conventions. Official builds come only from the maintainer: the GPL covers the source, while the Vorssaint name, icon and look are covered by [TRADEMARKS.md](TRADEMARKS.md), so forks need their own identity.
 
