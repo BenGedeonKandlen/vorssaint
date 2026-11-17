@@ -84,6 +84,16 @@ jobs:
       - name: Unit tests
         run: ./build.sh --test
 
+      - name: Crash reports
+        if: failure()
+        run: |
+          for f in ~/Library/Logs/DiagnosticReports/metrics-tests*; do
+            [ -e "$f" ] || continue
+            echo "::group::$f"
+            head -c 60000 "$f"
+            echo "::endgroup::"
+          done
+
   universal:
     name: Universal build
     runs-on: macos-26
