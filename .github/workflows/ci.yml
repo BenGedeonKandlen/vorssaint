@@ -84,13 +84,20 @@ jobs:
       - name: Unit tests
         run: ./build.sh --test
 
-      - name: Crash reports
+      - name: Crash diagnostics
         if: failure()
         run: |
-          for f in ~/Library/Logs/DiagnosticReports/metrics-tests*; do
+          ls -la ~/Library/Logs/DiagnosticReports /Library/Logs/DiagnosticReports 2>/dev/null | tail -20 || true
+          for f in ~/Library/Logs/DiagnosticReports/metrics-tests* /Library/Logs/DiagnosticReports/metrics-tests*; do
             [ -e "$f" ] || continue
             echo "::group::$f"
             head -c 60000 "$f"
+            echo "::endgroup::"
+          done
+          # Run the suites around the crash on their own to see which one aborts.
+          for s in notch-music recorder notch; do
+            echo "::group::suite $s"
+            ./build/metrics-tests --suite=$s && echo "exit $s: 0" || echo "exit $s: $?"
             echo "::endgroup::"
           done
 
