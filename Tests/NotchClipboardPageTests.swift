@@ -228,9 +228,7 @@ enum NotchClipboardPageTests {
         for compact in [true, false] {
             let picture = Page().thumbnail(Color.white.aspectRatio(1.5, contentMode: .fit), compact: compact)
                 .frame(width: 100, height: 40, alignment: .topLeading)
-            let renderer = ImageRenderer(content: picture)
-            renderer.scale = 2
-            let corners = renderer.cgImage.map { image in
+            let corners = rasterize(picture, scale: 2).map { image in
                 [alpha(image, x: 0, y: 0), alpha(image, x: 119, y: 0), alpha(image, x: 119, y: 79), alpha(image, x: 60, y: 40)]
             }
             suite.expect(corners == [0, 0, 0, 255],
@@ -245,6 +243,26 @@ enum NotchClipboardPageTests {
             suite.expect(page.dwell == nil && page.hoveredID == nil,
                          "the clipboard page reads \"\(stored)\" as comfortable entries, which never open on hover")
         }
+    }
+
+    /// Draws a view into a CPU bitmap. `ImageRenderer.cgImage` rasterizes on
+    /// the GPU, which aborts on virtual machines whose paravirtual Metal device
+    /// has no architecture (GitHub's Intel runners); drawing through
+    /// `render(rasterizationScale:renderer:)` gives the same pixels on any Mac.
+    @MainActor private static func rasterize<V: View>(_ view: V, scale: CGFloat) -> CGImage? {
+        let renderer = ImageRenderer(content: view)
+        var image: CGImage?
+        renderer.render(rasterizationScale: scale) { size, draw in
+            let width = Int((size.width * scale).rounded()), height = Int((size.height * scale).rounded())
+            guard width > 0, height > 0,
+                  let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                                          space: CGColorSpaceCreateDeviceRGB(),
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return }
+            context.scaleBy(x: scale, y: scale)
+            draw(context)
+            image = context.makeImage()
+        }
+        return image
     }
 
     /// The opacity of one pixel, counted from the image's top left.
