@@ -34,7 +34,16 @@ xattr -cr "$APP"
 codesign --verify --deep --strict "$APP"
 
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$APP/Contents/Info.plist")"
-OUT="dist/Vorssaint-$VERSION.dmg"
+# Apple Silicon builds keep the plain name the updater has always used; Intel
+# and universal builds say so, which is how the in-app updater on an Intel Mac
+# recognizes a DMG it can install.
+ARCHS="$(lipo -archs "$APP/Contents/MacOS/$APP_NAME" 2>/dev/null || echo arm64)"
+case " $ARCHS " in
+    *" arm64 "*" x86_64 "*|*" x86_64 "*" arm64 "*) ARCH_SUFFIX="-universal" ;;
+    *" x86_64 "*) ARCH_SUFFIX="-x86_64" ;;
+    *) ARCH_SUFFIX="" ;;
+esac
+OUT="dist/Vorssaint-$VERSION$ARCH_SUFFIX.dmg"
 
 echo "▸ Rendering installer background…"
 swift Tools/MakeDMGBackground.swift build/dmg-background.png

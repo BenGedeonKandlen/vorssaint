@@ -28,14 +28,19 @@ trap 'exit 1' INT TERM HUP
 
 # Flags: --dev builds the local-only "Vorssaint (Developer)" variant (its own
 # bundle id, so it coexists with the official app); --install puts it in /Applications.
+# --arch=arm64|x86_64|universal picks the CPU architecture (or VORSSAINT_ARCH);
+# the default is the Mac doing the build, so an Intel Mac builds for Intel.
 DEV=0
 INSTALL=0
 TEST=0
 TEST_ARGS=()
+BUILD_ARCH="${VORSSAINT_ARCH:-}"
 for arg in "$@"; do
     case "$arg" in
         --dev)     DEV=1 ;;
         --install) INSTALL=1 ;;
+        --arch=*)  BUILD_ARCH="${arg#*=}" ;;
+        --universal) BUILD_ARCH="universal" ;;
         --test)    TEST=1 ;;
         --test-suite=*) TEST=1; TEST_ARGS+=("--suite=${arg#*=}") ;;
         --list-tests) TEST=1; TEST_ARGS+=(--list) ;;
@@ -62,7 +67,26 @@ FAN_HELPER_ID="$APP_BUNDLE_ID.fan-control"
 # Sources/NowPlayingAdapter. Staged under Contents/Frameworks, signed on its own.
 NOW_PLAYING_ADAPTER_ID="$APP_BUNDLE_ID.now-playing"
 NOW_PLAYING_ADAPTER="libVorssaintNowPlaying.dylib"
-TARGET="arm64-apple-macosx14.0"
+# The native architecture of this Mac. hw.optional.arm64 is also 1 under
+# Rosetta, where `uname -m` would claim x86_64.
+if [[ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" == "1" ]]; then
+    HOST_ARCH="arm64"
+else
+    HOST_ARCH="x86_64"
+fi
+case "${BUILD_ARCH:-$HOST_ARCH}" in
+    arm64|apple|applesilicon) ARCHS=(arm64) ;;
+    x86_64|intel)             ARCHS=(x86_64) ;;
+    universal)                ARCHS=(arm64 x86_64) ;;
+    *)
+        echo "✗ Unknown architecture '$BUILD_ARCH' (use arm64, x86_64 or universal)" >&2
+        exit 1
+        ;;
+esac
+MIN_MACOS="14.0"
+target_for() { print -r -- "$1-apple-macosx$MIN_MACOS"; }
+# Tests run on this Mac, so they are always built for it.
+TARGET="$(target_for "$HOST_ARCH")"
 ENTITLEMENTS="Resources/Vorssaint.entitlements"
 LEGACY_IDENTITY="Vorssaint Utils Signing"
 
@@ -209,8 +233,11 @@ VM_STATISTICS_COMPAT_FLAGS=(-I Sources/VMStatisticsCompat)
 HID_EVENT_SYSTEM_FLAGS=(-I Sources/HIDEventSystem)
 CORE_AUDIO_TAP_FLAGS=(-I Sources/CoreAudioTapCompat)
 GIF_CODEC_FLAGS=(-I Sources/RecorderGIFCodec)
-GIF_CODEC_OBJECTS=(build/objects/recorder-gif-codec/RecorderGIFCodec.o
-                   build/objects/recorder-gif-codec/cgif_raw.o)
+# Objects for one architecture: gif_codec_objects <arch>
+gif_codec_objects() {
+    print -r -- "build/objects/$1/recorder-gif-codec/RecorderGIFCodec.o"
+    print -r -- "build/objects/$1/recorder-gif-codec/cgif_raw.o"
+}
 if [[ "$SDK" == "$PINNED_SDK" ]]; then
     # Swift 6.4 can read the SDK 26 interfaces when given their compiler version.
     SDK_COMPAT_FLAGS=(-Xfrontend -interface-compiler-version -Xfrontend 6.3.2)
@@ -249,13 +276,19 @@ discard_test_preferences() {
 
 # Standalone automated tests: pure contracts plus isolated disk, subprocess,
 # keyboard-data and media fixtures. No application windows or device capture.
-mkdir -p build/objects/recorder-gif-codec
-xcrun clang -O3 -std=c99 -target "$TARGET" -isysroot "$SDK" \
-    -c Sources/RecorderGIFCodec/RecorderGIFCodec.c -o "$GIF_CODEC_OBJECTS[1]"
-xcrun clang -O3 -std=c99 -target "$TARGET" -isysroot "$SDK" \
-    -c Sources/RecorderGIFCodec/vendor/cgif/cgif_raw.c -o "$GIF_CODEC_OBJECTS[2]"
+compile_gif_codec() {
+    local arch="$1"
+    local objects=("${(@f)$(gif_codec_objects "$arch")}")
+    mkdir -p "$(dirname "$objects[1]")"
+    xcrun clang -O3 -std=c99 -target "$(target_for "$arch")" -isysroot "$SDK" \
+        -c Sources/RecorderGIFCodec/RecorderGIFCodec.c -o "$objects[1]"
+    xcrun clang -O3 -std=c99 -target "$(target_for "$arch")" -isysroot "$SDK" \
+        -c Sources/RecorderGIFCodec/vendor/cgif/cgif_raw.c -o "$objects[2]"
+}
 
 if (( TEST )); then
+    compile_gif_codec "$HOST_ARCH"
+    GIF_CODEC_OBJECTS=("${(@f)$(gif_codec_objects "$HOST_ARCH")}")
     python3 Tests/generate_sources.py
     TEST_OBJECT_DIR="build/objects/tests"
     mkdir -p "$TEST_OBJECT_DIR"
@@ -621,7 +654,7 @@ if (( TEST )); then
     exit $test_status
 fi
 
-echo "▸ Compiling ($BUILD_CONFIGURATION) against $(basename "$SDK")…"
+echo "▸ Compiling ($BUILD_CONFIGURATION, ${(j:+:)ARCHS}) against $(basename "$SDK")…"
 APP_SOURCES=(Sources/Vorssaint/**/*.swift)
 if (( ! DEV )); then
     # A release starts from an empty build directory, so nothing an earlier
@@ -630,42 +663,70 @@ if (( ! DEV )); then
     # changed since, and a fresh checkout has none.
     find build -mindepth 1 -maxdepth 1 ! -name objects -exec rm -rf {} + 2>/dev/null || true
 fi
-APP_OBJECT_DIR="build/objects/$EXECUTABLE"
-mkdir -p build "$APP_OBJECT_DIR"
-APP_OUTPUT_FILE_MAP="$APP_OBJECT_DIR/output-file-map.json"
-write_swift_output_file_map "$APP_OUTPUT_FILE_MAP" "$APP_OBJECT_DIR" "${APP_SOURCES[@]}"
-# Without -j the driver compiles one file at a time, and without batch mode
-# each file's compiler parses the whole module again: a clean release took a
-# quarter of an hour. Batches share that work and run on every core, and the
-# optimization stays per file, as before.
-swiftc "${APP_OPTIMIZATION_FLAGS[@]}" -incremental -enable-batch-mode -j "$(sysctl -n hw.logicalcpu)" \
-    -output-file-map "$APP_OUTPUT_FILE_MAP" \
-    -target "$TARGET" -sdk "$SDK" "${SDK_COMPAT_FLAGS[@]}" "${VM_STATISTICS_COMPAT_FLAGS[@]}" "${HID_EVENT_SYSTEM_FLAGS[@]}" \
-    "${CORE_AUDIO_TAP_FLAGS[@]}" "${GIF_CODEC_FLAGS[@]}" \
-    "${BUILD_VARIANT_FLAGS[@]}" \
-    "${APP_SOURCES[@]}" "${GIF_CODEC_OBJECTS[@]}" -o "build/$EXECUTABLE"
-xcrun dyld_info -imports "build/$EXECUTABLE" | awk -f Tests/AudioTapImports.awk
+mkdir -p build
 
-echo "▸ Compiling protected fan helper…"
-swiftc -O -target "$TARGET" -sdk "$SDK" "${SDK_COMPAT_FLAGS[@]}" "${BUILD_VARIANT_FLAGS[@]}" \
-    Sources/Vorssaint/Services/FanControl/FanControlSupport.swift \
-    Sources/Vorssaint/Services/FanControl/FanControlXPC.swift \
-    Sources/Vorssaint/Services/SystemMonitor/SMCClient.swift \
-    Sources/Vorssaint/Services/Metrics/TemperatureSensorSelector.swift \
-    Sources/Vorssaint/Services/FanControl/FanControlHardware.swift \
-    Sources/FanControlHelper/main.swift \
-    -o "build/$FAN_HELPER_ID"
-"build/$FAN_HELPER_ID" --selftest
+# Each architecture is compiled on its own into build/<arch>/ and the slices are
+# then joined with lipo, so a universal build runs natively on Apple Silicon
+# and on Intel Macs.
+for arch in "${ARCHS[@]}"; do
+    ARCH_TARGET="$(target_for "$arch")"
+    ARCH_OUT="build/$arch"
+    mkdir -p "$ARCH_OUT"
+    compile_gif_codec "$arch"
+    GIF_CODEC_OBJECTS=("${(@f)$(gif_codec_objects "$arch")}")
 
-echo "▸ Compiling Now Playing adapter…"
-swiftc -O -target "$TARGET" -sdk "$SDK" "${SDK_COMPAT_FLAGS[@]}" -emit-library \
-    -module-name VorssaintNowPlaying \
-    Sources/NowPlayingAdapter/NowPlayingAdapter.swift \
-    Sources/NowPlayingAdapter/NowPlayingQueue.swift \
-    Sources/NowPlayingAdapter/NowPlayingSelection.swift \
-    Sources/Vorssaint/Services/Notch/NotchPlaybackSource.swift \
-    Sources/Vorssaint/Services/Notch/NotchPlaybackCommand.swift \
-    -o "build/$NOW_PLAYING_ADAPTER"
+    APP_OBJECT_DIR="build/objects/$arch/$EXECUTABLE"
+    mkdir -p "$APP_OBJECT_DIR"
+    APP_OUTPUT_FILE_MAP="$APP_OBJECT_DIR/output-file-map.json"
+    write_swift_output_file_map "$APP_OUTPUT_FILE_MAP" "$APP_OBJECT_DIR" "${APP_SOURCES[@]}"
+    # Without -j the driver compiles one file at a time, and without batch mode
+    # each file's compiler parses the whole module again: a clean release took a
+    # quarter of an hour. Batches share that work and run on every core, and the
+    # optimization stays per file, as before.
+    echo "  ▸ app ($arch)"
+    swiftc "${APP_OPTIMIZATION_FLAGS[@]}" -incremental -enable-batch-mode -j "$(sysctl -n hw.logicalcpu)" \
+        -output-file-map "$APP_OUTPUT_FILE_MAP" \
+        -target "$ARCH_TARGET" -sdk "$SDK" "${SDK_COMPAT_FLAGS[@]}" "${VM_STATISTICS_COMPAT_FLAGS[@]}" "${HID_EVENT_SYSTEM_FLAGS[@]}" \
+        "${CORE_AUDIO_TAP_FLAGS[@]}" "${GIF_CODEC_FLAGS[@]}" \
+        "${BUILD_VARIANT_FLAGS[@]}" \
+        "${APP_SOURCES[@]}" "${GIF_CODEC_OBJECTS[@]}" -o "$ARCH_OUT/$EXECUTABLE"
+    xcrun dyld_info -imports "$ARCH_OUT/$EXECUTABLE" | awk -f Tests/AudioTapImports.awk
+
+    echo "  ▸ protected fan helper ($arch)"
+    swiftc -O -target "$ARCH_TARGET" -sdk "$SDK" "${SDK_COMPAT_FLAGS[@]}" "${BUILD_VARIANT_FLAGS[@]}" \
+        Sources/Vorssaint/Services/FanControl/FanControlSupport.swift \
+        Sources/Vorssaint/Services/FanControl/FanControlXPC.swift \
+        Sources/Vorssaint/Services/SystemMonitor/SMCClient.swift \
+        Sources/Vorssaint/Services/Metrics/TemperatureSensorSelector.swift \
+        Sources/Vorssaint/Services/FanControl/FanControlHardware.swift \
+        Sources/FanControlHelper/main.swift \
+        -o "$ARCH_OUT/$FAN_HELPER_ID"
+
+    echo "  ▸ Now Playing adapter ($arch)"
+    swiftc -O -target "$ARCH_TARGET" -sdk "$SDK" "${SDK_COMPAT_FLAGS[@]}" -emit-library \
+        -module-name VorssaintNowPlaying \
+        Sources/NowPlayingAdapter/NowPlayingAdapter.swift \
+        Sources/NowPlayingAdapter/NowPlayingQueue.swift \
+        Sources/NowPlayingAdapter/NowPlayingSelection.swift \
+        Sources/Vorssaint/Services/Notch/NotchPlaybackSource.swift \
+        Sources/Vorssaint/Services/Notch/NotchPlaybackCommand.swift \
+        -o "$ARCH_OUT/$NOW_PLAYING_ADAPTER"
+done
+
+echo "▸ Joining architectures (${(j: :)ARCHS})…"
+for product in "$EXECUTABLE" "$FAN_HELPER_ID" "$NOW_PLAYING_ADAPTER"; do
+    slices=()
+    for arch in "${ARCHS[@]}"; do slices+=("build/$arch/$product"); done
+    xcrun lipo -create "${slices[@]}" -output "build/$product"
+    echo "  $product: $(xcrun lipo -archs "build/$product")"
+done
+
+# The self-test can only run on a slice this Mac executes natively.
+if [[ " ${ARCHS[*]} " == *" $HOST_ARCH "* ]]; then
+    "build/$FAN_HELPER_ID" --selftest
+else
+    echo "  fan helper self-test skipped: built for ${(j: :)ARCHS}, this Mac is $HOST_ARCH"
+fi
 
 echo "▸ Generating app icon…"
 swift Tools/MakeIcon.swift build/AppIcon.iconset

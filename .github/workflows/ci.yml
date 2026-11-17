@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -58,3 +59,49 @@ jobs:
 
       - name: Unit tests
         run: ./build.sh --test
+
+  intel:
+    name: Intel build, selftest & tests
+    runs-on: macos-15-intel
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Build (native x86_64)
+        run: ./build.sh
+
+      - name: Verify architecture
+        run: test "$(lipo -archs build/Vorssaint)" = "x86_64"
+
+      - name: Selftest
+        run: ./build/Vorssaint --selftest
+
+      - name: Package DMG
+        run: ./Tools/make-dmg.sh && ls dist/*-x86_64.dmg
+
+      - name: Unit tests
+        run: ./build.sh --test
+
+  universal:
+    name: Universal build
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Build (arm64 + x86_64)
+        run: ./build.sh --universal
+
+      - name: Verify architectures
+        run: |
+          for f in build/Vorssaint build/com.vorssaint.utils.fan-control build/libVorssaintNowPlaying.dylib; do
+            lipo -archs "$f" | grep -q x86_64
+            lipo -archs "$f" | grep -q arm64
+          done
+
+      - name: Selftest
+        run: ./build/Vorssaint --selftest

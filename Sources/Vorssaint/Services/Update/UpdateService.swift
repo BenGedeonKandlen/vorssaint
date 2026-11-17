@@ -153,7 +153,10 @@ final class UpdateService: ObservableObject {
                 }
 
                 let candidates = releases.map { rel -> UpdateServiceSupport.ReleaseCandidate in
-                    let asset = rel.assets.first { $0.name.hasSuffix(".dmg") }
+                    let assetName = UpdateServiceSupport.dmgAssetName(
+                        from: rel.assets.map(\.name),
+                        architecture: UpdateServiceSupport.runningArchitecture)
+                    let asset = rel.assets.first { $0.name == assetName }
                     return UpdateServiceSupport.ReleaseCandidate(
                         tagName: rel.tagName,
                         isPrerelease: rel.prerelease ?? false,
